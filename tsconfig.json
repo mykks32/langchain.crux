@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    // Module system
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    // JavaScript target
+    "target": "ES2023",
+
+    // Interoperability
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+
+    // Project structure
+    "baseUrl": ".",
+    "outDir": "./dist",
+
+    // Output
+    "declaration": true,
+    "sourceMap": true,
+
+    // Compilation
+    "incremental": true,
+    "isolatedModules": true,
+
+    // Type safety
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Performance
+    "skipLibCheck": true
+  }
+}

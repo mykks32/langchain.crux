@@ -1,0 +1,7 @@
+{
+  // Base TypeScript configuration
+  "extends": "./tsconfig.json",
+
+  // Exclude files not needed in production builds
+  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+}
