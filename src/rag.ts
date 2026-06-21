@@ -25,108 +25,135 @@ export interface ChatTurn {
   content: string;
 }
 
-/**
- * Loads FAISS vector store from disk using Gemini embeddings.
- *
- * @returns Loaded FaissStore instance
- */
-async function loadStore(): Promise<FaissStore> {
-  const embeddings = new GoogleGenerativeAIEmbeddings({
-    apiKey: env.geminiApiKey,
-    modelName: env.geminiEmbeddingModel,
-  });
+export class RAGPipeline {
+  /**
+   * Ask a question using RAG pipeline:
+   * 1. Condense follow-up question (if history exists)
+   * 2. Retrieve relevant documents
+   * 3. Generate answer using LLM + context
+   *
+   * @param question - User question
+   * @param history - Chat history (optional)
+   * @returns Final LLM answer
+   */
+  async ask(question: string, history: ChatTurn[] = []): Promise<string> {
+    // Convert chat history to LangChain messages
+    const chatHistory: BaseMessage[] = history.map((m) =>
+      m.role === 'human' ? new HumanMessage(m.content) : new AIMessage(m.content),
+    );
 
-  return FaissStore.load(env.vectorStorePath, embeddings);
-}
+    // Convert question if history exists
+    const standalone = await this.condenseQuestion(question, chatHistory);
 
-/**
- * Ask a question using RAG pipeline:
- * 1. Load vector store
- * 2. Retrieve relevant documents
- * 3. Condense follow-up question
- * 4. Generate answer using LLM + context
- *
- * @param question - User question
- * @param history - Chat history (optional)
- * @returns Final LLM answer
- */
-export async function ask(
-  question: string,
-  history: ChatTurn[] = [],
-): Promise<string> {
-  // Load vector store
-  const store = await loadStore();
-  const retriever = store.asRetriever({ k: 5 });
+    logger.debug({ standalone }, 'Standalone question');
 
-  // LLM instance
-  const llm = new ChatGoogleGenerativeAI({
-    model: env.geminiModel,
-    apiKey: env.geminiApiKey,
-    temperature: 0.2,
-  });
+    return this.retrieveAndAnswer(standalone, chatHistory);
+  }
 
-  // Convert chat history to LangChain messages
-  const chatHistory: BaseMessage[] = history.map((m) =>
-    m.role === 'human' ? new HumanMessage(m.content) : new AIMessage(m.content),
-  );
+  /**
+   * Loads FAISS vector store from disk using Gemini embeddings.
+   *
+   * @returns Loaded FaissStore instance
+   */
+  private async loadStore(): Promise<FaissStore> {
+    const embeddings = new GoogleGenerativeAIEmbeddings({
+      apiKey: env.geminiApiKey,
+      modelName: env.geminiEmbeddingModel,
+    });
 
-  // Chain: convert follow-up question → standalone question
-  const condenseChain = RunnableSequence.from([
-    ChatPromptTemplate.fromMessages([
-      [
-        'system',
-        'Rewrite the follow-up question as a standalone question. Output ONLY the question.',
-      ],
-      new MessagesPlaceholder('chat_history'),
-      ['human', '{question}'],
-    ]),
-    llm,
-    new StringOutputParser(),
-  ]);
+    return FaissStore.load(env.vectorStorePath, embeddings);
+  }
 
-  // Convert question if history exists
-  const standalone =
-    chatHistory.length > 0
-      ? await condenseChain.invoke({
-          question,
-          chat_history: chatHistory,
-        })
-      : question;
+  /**
+   * Rewrites a follow-up question as a standalone question using chat history.
+   * Returns the original question unchanged if there is no history.
+   *
+   * @param question - Raw user question
+   * @param chatHistory - Accumulated conversation messages
+   * @returns Standalone question string
+   */
+  private async condenseQuestion(
+    question: string,
+    chatHistory: BaseMessage[],
+  ): Promise<string> {
+    if (chatHistory.length === 0) return question;
 
-  logger.debug({ standalone }, 'Standalone question');
+    const llm = new ChatGoogleGenerativeAI({
+      model: env.geminiModel,
+      apiKey: env.geminiApiKey,
+      temperature: 0.2,
+    });
 
-  // Retrieve relevant documents
-  const docs = await retriever.invoke(standalone);
-  logger.debug({ chunks: docs.length }, 'Retrieved chunks');
+    // Chain: convert follow-up question → standalone question
+    const condenseChain = RunnableSequence.from([
+      ChatPromptTemplate.fromMessages([
+        [
+          'system',
+          'Rewrite the follow-up question as a standalone question. Output ONLY the question.',
+        ],
+        new MessagesPlaceholder('chat_history'),
+        ['human', '{question}'],
+      ]),
+      llm,
+      new StringOutputParser(),
+    ]);
 
-  // RAG answer chain
-  const answerChain = RunnableSequence.from([
-    // Inject retrieved context
-    RunnablePassthrough.assign({
-      context: () => docs.map((d) => d.pageContent).join('\n\n'),
-    }),
+    return condenseChain.invoke({ question, chat_history: chatHistory });
+  }
 
-    // Prompt template
-    ChatPromptTemplate.fromMessages([
-      [
-        'system',
-        `You are a helpful assistant. Answer ONLY using the context below.
+  /**
+   * Retrieves relevant document chunks and generates a grounded answer.
+   *
+   * @param standalone - Condensed standalone question
+   * @param chatHistory - Accumulated conversation messages
+   * @returns LLM-generated answer string
+   */
+  private async retrieveAndAnswer(
+    standalone: string,
+    chatHistory: BaseMessage[],
+  ): Promise<string> {
+    const store = await this.loadStore();
+    const retriever = store.asRetriever({ k: 5 });
+
+    const llm = new ChatGoogleGenerativeAI({
+      model: env.geminiModel,
+      apiKey: env.geminiApiKey,
+      temperature: 0.2,
+    });
+
+    // Retrieve relevant documents
+    const docs = await retriever.invoke(standalone);
+    logger.debug({ chunks: docs.length }, 'Retrieved chunks');
+
+    // RAG answer chain
+    const answerChain = RunnableSequence.from([
+      // Inject retrieved context
+      RunnablePassthrough.assign({
+        context: () => docs.map((d) => d.pageContent).join('\n\n'),
+      }),
+
+      // Prompt template
+      ChatPromptTemplate.fromMessages([
+        [
+          'system',
+          `You are a helpful assistant. Answer ONLY using the context below.
 If context is insufficient, say so.
 
 Context:
 {context}`,
-      ],
-      new MessagesPlaceholder('chat_history'),
-      ['human', '{question}'],
-    ]),
+        ],
+        new MessagesPlaceholder('chat_history'),
+        ['human', '{question}'],
+      ]),
 
-    llm,
-    new StringOutputParser(),
-  ]);
+      llm,
+      new StringOutputParser(),
+    ]);
 
-  // Generate final answer
-  return answerChain.invoke({
-    question: standalone,
-    chat_history: chatHistory,
-  });
+    // Generate final answer
+    return answerChain.invoke({
+      question: standalone,
+      chat_history: chatHistory,
+    });
+  }
 }

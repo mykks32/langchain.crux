@@ -15,8 +15,8 @@
 import { Command } from 'commander';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
-import { ingest } from './ingest.js';
-import { ask, type ChatTurn } from './rag.js';
+import { Ingester } from './ingest.js';
+import { RAGPipeline, type ChatTurn } from './rag.js';
 import { logger } from './logger.js';
 
 const program = new Command();
@@ -34,7 +34,7 @@ program
   .argument('<path>', 'Path to folder containing PDF files')
   .action(async (docsPath: string) => {
     try {
-      await ingest(docsPath);
+      await new Ingester(docsPath).run();
     } catch (err) {
       logger.error({ err }, 'Ingestion failed');
       process.exit(1);
@@ -55,7 +55,7 @@ program
     // Logger stays active since readline isn't involved.
     if (opts.question) {
       try {
-        const answer = await ask(opts.question);
+        const answer = await new RAGPipeline().ask(opts.question);
         process.stdout.write(`\n${answer}\n\n`);
       } catch (err) {
         logger.error({ err }, 'Failed to answer question');
@@ -105,7 +105,7 @@ program
         // \r moves the cursor back to the start of the line so the answer
         // overwrites it cleanly.
         process.stdout.write('Thinking...\r');
-        const answer = await ask(trimmed, history);
+        const answer = await new RAGPipeline().ask(trimmed, history);
         process.stdout.write(`\rAssistant: ${answer}\n\n`);
 
         // Append this turn to history so follow-up questions have context

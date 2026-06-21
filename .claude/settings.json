@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm *)",
+      "Bash(npx tsc*)",
+      "Bash(npx tsx*)",
+      "Bash(node *)",
+      "Bash(find . *)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(mkdir *)",
+      "Bash(rm -rf dist)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '(.tool_input.file_path // empty)' | grep -E '\\.(ts|json|md)$' | xargs -I{} npx prettier --write {} 2>/dev/null; exit 0"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '\\n[claude] Run /quality to verify typecheck + lint before committing.'"
+          }
+        ]
+      }
+    ]
+  }
+}

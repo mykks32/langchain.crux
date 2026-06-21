@@ -8,92 +8,122 @@ import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 import { logger } from './logger.js';
 import { env } from './env.js';
 
-/**
- * Loads all PDF files from a directory and converts them into LangChain Documents.
- *
- * @param docsPath - Directory containing PDF files
- * @returns Array of loaded Document objects
- */
-async function loadPdfs(docsPath: string): Promise<Document[]> {
-  // Read all files in directory
-  const files = await readdir(docsPath);
+export class Ingester {
+  constructor(private readonly docsPath: string) {}
 
-  const docs: Document[] = [];
+  /**
+   * Ingests PDF documents into a FAISS vector store.
+   *
+   * Pipeline:
+   * 1. Load PDFs
+   * 2. Split into chunks
+   * 3. Generate embeddings
+   * 4. Save vector store
+   */
+  async run(): Promise<void> {
+    logger.info({ docsPath: this.docsPath }, 'Starting ingestion');
 
-  try {
-    for (const file of files) {
-      // Skip non-PDF files
-      if (extname(file).toLowerCase() !== '.pdf') continue;
+    // Step 1: Load raw documents
+    const rawDocs = await this.loadPdfs();
 
-      const filePath = join(docsPath, file);
-
-      // Log file processing
-      logger.info({ file }, 'loading PDF');
-
-      // Load PDF into LangChain documents
-      const loader = new PDFLoader(filePath);
-      const loadedDocs = await loader.load();
-
-      // Collect documents
-      docs.push(...loadedDocs);
+    if (rawDocs.length === 0) {
+      logger.warn({ docsPath: this.docsPath }, 'No PDF files found');
+      return;
     }
 
-    return docs;
-  } catch (err) {
-    // Log and propagate error
-    logger.error({ err }, 'Failed to load PDFs');
-    throw err;
-  }
-}
+    logger.info({ pages: rawDocs.length }, 'Splitting into chunks');
 
-/**
- * Ingests PDF documents into a FAISS vector store.
- *
- * Pipeline:
- * 1. Load PDFs
- * 2. Split into chunks
- * 3. Generate embeddings
- * 4. Save vector store
- *
- * @param docsPath - Path containing PDF files
- */
-export async function ingest(docsPath: string): Promise<void> {
-  logger.info({ docsPath }, 'Starting ingestion');
+    // Step 2: Split documents into chunks
+    const chunks = await this.split(rawDocs);
 
-  // Step 1: Load raw documents
-  const rawDocs = await loadPdfs(docsPath);
+    logger.info({ chunks: chunks.length }, 'Embedding chunks');
 
-  if (rawDocs.length === 0) {
-    logger.warn({ docsPath }, 'No PDF files found');
-    return;
+    // Step 3: Create vector store
+    const store = await this.embed(chunks);
+
+    // Step 4: Save locally
+    await this.save(store);
   }
 
-  logger.info({ pages: rawDocs.length }, 'Splitting into chunks');
+  /**
+   * Loads all PDF files from the configured directory and converts them into LangChain Documents.
+   *
+   * @returns Array of loaded Document objects
+   */
+  private async loadPdfs(): Promise<Document[]> {
+    // Read all files in directory
+    const files = await readdir(this.docsPath);
 
-  // Step 2: Split documents into chunks
-  const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize: 1000,
-    chunkOverlap: 200,
-  });
+    const docs: Document[] = [];
 
-  const chunks = await splitter.splitDocuments(rawDocs);
+    try {
+      for (const file of files) {
+        // Skip non-PDF files
+        if (extname(file).toLowerCase() !== '.pdf') continue;
 
-  logger.info({ chunks: chunks.length }, 'Embedding chunks');
+        const filePath = join(this.docsPath, file);
 
-  // Step 3: Create embeddings model
-  const embeddings = new GoogleGenerativeAIEmbeddings({
-    apiKey: env.geminiApiKey,
-    modelName: env.geminiEmbeddingModel,
-  });
+        // Log file processing
+        logger.info({ file }, 'loading PDF');
 
-  // Step 4: Create vector store
-  const store = await FaissStore.fromDocuments(chunks, embeddings);
+        // Load PDF into LangChain documents
+        const loader = new PDFLoader(filePath);
+        const loadedDocs = await loader.load();
 
-  // Step 5: Save locally
-  await store.save(env.vectorStorePath);
+        // Collect documents
+        docs.push(...loadedDocs);
+      }
 
-  logger.info(
-    { path: env.vectorStorePath, chunks: chunks.length },
-    'Vector store saved',
-  );
+      return docs;
+    } catch (err) {
+      // Log and propagate error
+      logger.error({ err }, 'Failed to load PDFs');
+      throw err;
+    }
+  }
+
+  /**
+   * Splits documents into overlapping chunks for embedding.
+   *
+   * @param docs - Raw loaded documents
+   * @returns Array of chunked Document objects
+   */
+  private async split(docs: Document[]): Promise<Document[]> {
+    const splitter = new RecursiveCharacterTextSplitter({
+      chunkSize: 1000,
+      chunkOverlap: 200,
+    });
+
+    return splitter.splitDocuments(docs);
+  }
+
+  /**
+   * Creates a FAISS vector store from document chunks using Gemini embeddings.
+   *
+   * @param chunks - Chunked documents to embed
+   * @returns Populated FaissStore instance
+   */
+  private async embed(chunks: Document[]): Promise<FaissStore> {
+    // Create embeddings model
+    const embeddings = new GoogleGenerativeAIEmbeddings({
+      apiKey: env.geminiApiKey,
+      modelName: env.geminiEmbeddingModel,
+    });
+
+    return FaissStore.fromDocuments(chunks, embeddings);
+  }
+
+  /**
+   * Persists the FAISS store to disk at the configured path.
+   *
+   * @param store - Vector store to save
+   */
+  private async save(store: FaissStore): Promise<void> {
+    await store.save(env.vectorStorePath);
+
+    logger.info(
+      { path: env.vectorStorePath },
+      'Vector store saved',
+    );
+  }
 }
