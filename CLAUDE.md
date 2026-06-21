@@ -18,6 +18,7 @@ Custom commands are defined in `.claude/commands/`. Type these in the Claude Cod
 | `/build` | Clean dist/ and compile TypeScript |
 | `/ingest <path>` | Index PDFs from a path (default: `./docs`) |
 | `/ask <question>` | Ask a single question against the vector store |
+| `/test` | End-to-end smoke test: ingest `./docs` then ask a question, report PASS/FAIL |
 
 **Hooks (automatic):**
 - After every file edit/write → Prettier auto-formats `.ts`, `.json`, `.md` files
